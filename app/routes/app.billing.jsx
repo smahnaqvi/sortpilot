@@ -1,4 +1,10 @@
-import { useLoaderData, useSubmit, useNavigation } from "react-router";
+import {
+  useActionData,
+  useLoaderData,
+  useSubmit,
+  useNavigation,
+} from "react-router";
+import { useEffect } from "react";
 import {
   Page,
   Card,
@@ -48,7 +54,7 @@ const PLANS = {
   velocity: {
     name: "Velocity",
     price: 15.99,
-    subtitle: "For serious Shopify brands",
+    subtitle: "For serious brands",
     limit: 100,
     badge: "Most popular",
     intro: "Everything in Scale, plus",
@@ -211,7 +217,10 @@ export async function action({ request }) {
     };
   }
 
-  return Response.redirect(confirmationUrl);
+  return {
+    ok: true,
+    confirmationUrl,
+  };
 }
 
 function FeatureItem({ children, muted = false, negative = false }) {
@@ -236,10 +245,17 @@ function FeatureItem({ children, muted = false, negative = false }) {
 
 export default function BillingPage() {
   const { currentPlan, plans, activeSubscriptions } = useLoaderData();
+  const actionData = useActionData();
   const submit = useSubmit();
   const navigation = useNavigation();
 
   const isLoading = navigation.state === "submitting";
+
+  useEffect(() => {
+    if (actionData?.confirmationUrl) {
+      window.open(actionData.confirmationUrl, "_top");
+    }
+  }, [actionData]);
 
   function choosePlan(planKey) {
     const formData = new FormData();
@@ -254,6 +270,15 @@ export default function BillingPage() {
       fullWidth
     >
       <BlockStack gap="400">
+        {actionData?.message ? (
+          <Banner
+            tone={actionData.ok ? "success" : "critical"}
+            title="Billing update"
+          >
+            <p>{actionData.message}</p>
+          </Banner>
+        ) : null}
+
         <Banner tone="info" title={`You are currently on ${currentPlan.name}`}>
           <p>
             Your current plan supports up to {currentPlan.limit} collections.
@@ -264,7 +289,6 @@ export default function BillingPage() {
         <InlineStack gap="400" wrap>
           {Object.entries(plans).map(([key, plan]) => {
             const isCurrent = currentPlan.name === plan.name;
-            const isRecommended = key === "velocity";
 
             return (
               <div
@@ -275,47 +299,47 @@ export default function BillingPage() {
                 }}
               >
                 <Card>
-                  
                   <BlockStack gap="350">
                     <div
-                        style={{
-                            margin: "-16px -16px 16px -16px",
-                            padding: "16px",
-                            borderRadius: "12px 12px 0 0",
-                            background:
-                            key === "velocity"
-                                ? "#d1fadf"
-                                : key === "enterprise"
-                                ? "#1f1f1f"
-                                : "transparent",
-                            color: key === "enterprise" ? "#ffffff" : "inherit",
-                        }}>
+                      style={{
+                        margin: "-16px -16px 16px -16px",
+                        padding: "16px",
+                        borderRadius: "12px 12px 0 0",
+                        background:
+                          key === "velocity"
+                            ? "#d1fadf"
+                            : key === "enterprise"
+                              ? "#1f1f1f"
+                              : "transparent",
+                        color: key === "enterprise" ? "#ffffff" : "inherit",
+                      }}
+                    >
+                      <InlineStack align="space-between" blockAlign="center">
+                        <BlockStack gap="050">
+                          <Text as="h2" variant="headingLg">
+                            {plan.name}
+                          </Text>
 
-                    <InlineStack align="space-between" blockAlign="center">
-                    
-                      <BlockStack gap="050">
-                        <Text as="h2" variant="headingLg">
-                          {plan.name}
-                        </Text>
+                          <Text
+                            as="p"
+                            tone={
+                              key === "enterprise" ? undefined : "subdued"
+                            }
+                          >
+                            {plan.subtitle}
+                          </Text>
+                        </BlockStack>
 
-                        <Text
-                        as="p"
-                        tone={key === "enterprise" ? undefined : "subdued"}
-                        >
-                        {plan.subtitle}
-                        </Text>
-                      </BlockStack>
+                        <BlockStack gap="100">
+                          {plan.badge ? (
+                            <Badge tone="success">{plan.badge}</Badge>
+                          ) : null}
 
-                      <BlockStack gap="100">
-                        {plan.badge ? (
-                          <Badge tone="success">{plan.badge}</Badge>
-                        ) : null}
-
-                        {isCurrent ? (
-                          <Badge tone="info">Current</Badge>
-                        ) : null}
-                      </BlockStack>
-                    </InlineStack>
+                          {isCurrent ? (
+                            <Badge tone="info">Current</Badge>
+                          ) : null}
+                        </BlockStack>
+                      </InlineStack>
                     </div>
 
                     <InlineStack gap="100" blockAlign="end">
@@ -379,7 +403,15 @@ export default function BillingPage() {
               </Text>
             </BlockStack>
 
-            <Button url="mailto:support@sortpilot.ai">
+            <Button
+              onClick={() =>
+                window.open(
+                  "https://ahntech.staticdomains.app/support.html",
+                  "_blank",
+                  "noopener,noreferrer",
+                )
+              }
+            >
               Contact us
             </Button>
           </InlineStack>

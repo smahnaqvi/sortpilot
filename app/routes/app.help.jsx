@@ -9,6 +9,14 @@ import {
 } from "@shopify/polaris";
 
 export default function HelpPage() {
+  function openSupport() {
+    window.open(
+      "https://ahntech.staticdomains.app/support.html",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  }
+
   return (
     <Page
       title="Help & Support"
@@ -23,21 +31,13 @@ export default function HelpPage() {
             </Text>
 
             <List type="number">
-              <List.Item>
-                Select collections from the Collections page
-              </List.Item>
+              <List.Item>Select collections from the Collections page</List.Item>
 
-              <List.Item>
-                Choose a sorting strategy
-              </List.Item>
+              <List.Item>Choose a sorting strategy</List.Item>
 
-              <List.Item>
-                Enable automation if needed
-              </List.Item>
+              <List.Item>Enable automation if needed</List.Item>
 
-              <List.Item>
-                Click Sort to apply changes to Shopify
-              </List.Item>
+              <List.Item>Click Sort to apply changes to Shopify</List.Item>
             </List>
           </BlockStack>
         </Card>
@@ -95,12 +95,10 @@ export default function HelpPage() {
               </Text>
             </BlockStack>
 
-            <Button url="mailto:support@sortpilot.ai">
-              Contact support
-            </Button>
+            <Button onClick={openSupport}>Contact support</Button>
           </InlineStack>
         </Card>
       </BlockStack>
     </Page>
   );
-}   
+}
