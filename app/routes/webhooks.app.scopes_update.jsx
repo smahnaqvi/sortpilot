@@ -2,21 +2,23 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 
 export const action = async ({ request }) => {
-  const { payload, session, topic, shop } = await authenticate.webhook(request);
+  try {
+    const { payload, session, topic, shop } = await authenticate.webhook(request);
 
-  console.log(`Received ${topic} webhook for ${shop}`);
-  const current = payload.current;
+    console.log(`Received ${topic} webhook for ${shop}`);
 
-  if (session) {
-    await db.session.update({
-      where: {
-        id: session.id,
-      },
-      data: {
-        scope: current.toString(),
-      },
-    });
+    const current = payload?.current;
+
+    if (session && current) {
+      await db.session.update({
+        where: { id: session.id },
+        data: { scope: current.toString() },
+      });
+    }
+
+    return new Response("OK", { status: 200 });
+  } catch (error) {
+    console.error("Invalid scopes_update webhook", error);
+    return new Response("Unauthorized", { status: 401 });
   }
-
-  return new Response();
 };
