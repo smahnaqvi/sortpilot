@@ -5,6 +5,7 @@ import {
   useActionData,
   useNavigation,
 } from "react-router";
+import { useState } from "react";
 import {
   Page,
   Card,
@@ -15,6 +16,10 @@ import {
   Button,
   Banner,
   DataTable,
+  TextField,
+  Select,
+  Checkbox,
+  Divider,
 } from "@shopify/polaris";
 
 import { authenticate } from "../shopify.server";
@@ -75,7 +80,34 @@ function getNextRunDate(schedule) {
 }
 
 export async function loader({ request }) {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+
+  const collectionsResponse = await admin.graphql(`
+    query GetCollectionsForStrategies {
+      collections(first: 100) {
+        edges {
+          node {
+            id
+            title
+            sortOrder
+            productsCount {
+              count
+            }
+          }
+        }
+      }
+    }
+  `);
+
+  const collectionsData = await collectionsResponse.json();
+
+  const collections =
+    collectionsData?.data?.collections?.edges?.map((edge) => ({
+      id: edge.node.id,
+      title: edge.node.title,
+      sortOrder: edge.node.sortOrder,
+      productsCount: edge.node.productsCount?.count || 0,
+    })) || [];
 
   const savedRules = await db.sortingRule.findMany({
     where: {
@@ -102,6 +134,7 @@ export async function loader({ request }) {
   });
 
   return {
+    collections,
     savedRules,
     executionLogs,
   };
@@ -112,6 +145,47 @@ export async function action({ request }) {
 
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent === "create_rule") {
+    const ruleName = String(formData.get("ruleName") || "").trim();
+    const rule = String(formData.get("rule") || "inventory_high_low");
+    const schedule = String(formData.get("schedule") || "manual");
+    const collectionIds = formData.getAll("collectionIds");
+
+    if (!ruleName) {
+      return { ok: false, message: "Strategy name is required." };
+    }
+
+    if (!collectionIds.length) {
+      return { ok: false, message: "Select at least one collection." };
+    }
+
+    const existingRule = await db.sortingRule.findFirst({
+      where: {
+        shop: session.shop,
+        name: ruleName,
+      },
+    });
+
+    if (existingRule) {
+      return { ok: false, message: "A strategy with this name already exists." };
+    }
+
+    await db.sortingRule.create({
+      data: {
+        shop: session.shop,
+        name: ruleName,
+        rule,
+        collectionIds: JSON.stringify(collectionIds),
+        schedule,
+        isActive: schedule !== "manual",
+        nextRunAt: getNextRunDate(schedule),
+      },
+    });
+
+    return { ok: true, message: "Strategy created successfully." };
+  }
+
   const ruleId = Number(formData.get("ruleId"));
 
   if (!ruleId) {
@@ -152,9 +226,7 @@ export async function action({ request }) {
 
     return {
       ok: true,
-      message: nextActiveState
-        ? "Strategy activated."
-        : "Strategy paused.",
+      message: nextActiveState ? "Strategy activated." : "Strategy paused.",
     };
   }
 
@@ -178,12 +250,63 @@ export async function action({ request }) {
 }
 
 export default function StrategiesPage() {
-  const { savedRules, executionLogs } = useLoaderData();
+  const { collections, savedRules, executionLogs } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
   const submit = useSubmit();
 
   const isWorking = navigation.state === "submitting";
+
+  const [ruleName, setRuleName] = useState("");
+  const [rule, setRule] = useState("inventory_high_low");
+  const [schedule, setSchedule] = useState("manual");
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState([]);
+
+  const ruleOptions = [
+    { label: "Inventory: High to Low", value: "inventory_high_low" },
+    { label: "Inventory: Low to High", value: "inventory_low_high" },
+    { label: "Price: High to Low", value: "price_high_low" },
+    { label: "Price: Low to High", value: "price_low_high" },
+    { label: "Newest Products First", value: "newest_first" },
+    { label: "Oldest Products First", value: "oldest_first" },
+    { label: "Title: A to Z", value: "title_az" },
+    { label: "Title: Z to A", value: "title_za" },
+    { label: "Randomize Products", value: "randomize" },
+  ];
+
+  const scheduleOptions = [
+    { label: "Manual only", value: "manual" },
+    { label: "Daily", value: "daily" },
+    { label: "Hourly", value: "hourly" },
+  ];
+
+  function toggleCollection(collectionId) {
+    setSelectedCollectionIds((current) => {
+      if (current.includes(collectionId)) {
+        return current.filter((id) => id !== collectionId);
+      }
+
+      return [...current, collectionId];
+    });
+  }
+
+  function createStrategy() {
+    const formData = new FormData();
+
+    formData.set("intent", "create_rule");
+    formData.set("ruleName", ruleName);
+    formData.set("rule", rule);
+    formData.set("schedule", schedule);
+
+    selectedCollectionIds.forEach((collectionId) => {
+      formData.append("collectionIds", collectionId);
+    });
+
+    submit(formData, { method: "post" });
+
+    setRuleName("");
+    setSelectedCollectionIds([]);
+  }
 
   function toggleRule(ruleId) {
     const formData = new FormData();
@@ -220,7 +343,7 @@ export default function StrategiesPage() {
   return (
     <Page
       title="Strategies"
-      subtitle="Manage saved sorting strategies and automation schedules"
+      subtitle="Create reusable sorting strategies and assign them to collections"
       fullWidth
     >
       <BlockStack gap="400">
@@ -238,11 +361,108 @@ export default function StrategiesPage() {
             <InlineStack align="space-between" blockAlign="center">
               <BlockStack gap="050">
                 <Text as="h2" variant="headingMd">
+                  Create Strategy
+                </Text>
+
+                <Text as="p" tone="subdued">
+                  Save a rule once and let SortPilot run it for one or more collections.
+                </Text>
+              </BlockStack>
+
+              <Badge tone="info">Automation</Badge>
+            </InlineStack>
+
+            <InlineStack gap="400" blockAlign="end" wrap>
+              <div style={{ minWidth: 260, flex: "1 1 260px" }}>
+                <TextField
+                  label="Strategy name"
+                  value={ruleName}
+                  onChange={setRuleName}
+                  placeholder="Example: High inventory first"
+                  autoComplete="off"
+                />
+              </div>
+
+              <div style={{ minWidth: 240 }}>
+                <Select
+                  label="Sorting rule"
+                  options={ruleOptions}
+                  value={rule}
+                  onChange={setRule}
+                />
+              </div>
+
+              <div style={{ minWidth: 180 }}>
+                <Select
+                  label="Schedule"
+                  options={scheduleOptions}
+                  value={schedule}
+                  onChange={setSchedule}
+                />
+              </div>
+            </InlineStack>
+
+            <Divider />
+
+            <BlockStack gap="200">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="h3" variant="headingSm">
+                  Collections
+                </Text>
+
+                <Badge>{selectedCollectionIds.length} selected</Badge>
+              </InlineStack>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+                  gap: 12,
+                }}
+              >
+                {collections.map((collection) => (
+                  <div
+                    key={collection.id}
+                    style={{
+                      padding: 12,
+                      border: "1px solid #e3e3e3",
+                      borderRadius: 10,
+                      background: "#fff",
+                    }}
+                  >
+                    <Checkbox
+                      label={`${collection.title} (${collection.productsCount} products)`}
+                      checked={selectedCollectionIds.includes(collection.id)}
+                      onChange={() => toggleCollection(collection.id)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </BlockStack>
+
+            <InlineStack align="end">
+              <Button
+                variant="primary"
+                loading={isWorking}
+                disabled={!ruleName || selectedCollectionIds.length === 0 || isWorking}
+                onClick={createStrategy}
+              >
+                Create strategy
+              </Button>
+            </InlineStack>
+          </BlockStack>
+        </Card>
+
+        <Card>
+          <BlockStack gap="300">
+            <InlineStack align="space-between" blockAlign="center">
+              <BlockStack gap="050">
+                <Text as="h2" variant="headingMd">
                   Saved Strategies
                 </Text>
 
                 <Text as="p" tone="subdued">
-                  These rules control how collections are sorted automatically.
+                  These strategies control scheduled collection sorting.
                 </Text>
               </BlockStack>
 
@@ -251,15 +471,12 @@ export default function StrategiesPage() {
 
             {savedRules.length === 0 ? (
               <Text as="p" tone="subdued">
-                No strategies saved yet. Create one from the Collections page.
+                No strategies saved yet. Create your first strategy above.
               </Text>
             ) : (
               <BlockStack gap="200">
                 {savedRules.map((savedRule) => {
-                  const collectionIds = safeJsonParse(
-                    savedRule.collectionIds,
-                    [],
-                  );
+                  const collectionIds = safeJsonParse(savedRule.collectionIds, []);
 
                   return (
                     <Card key={savedRule.id} background="bg-surface-secondary">
@@ -271,18 +488,13 @@ export default function StrategiesPage() {
                                 {savedRule.name}
                               </Text>
 
-                              <Badge
-                                tone={
-                                  savedRule.isActive ? "success" : "warning"
-                                }
-                              >
+                              <Badge tone={savedRule.isActive ? "success" : "warning"}>
                                 {savedRule.isActive ? "Active" : "Paused"}
                               </Badge>
                             </InlineStack>
 
                             <Text as="p" tone="subdued">
-                              {humanRule(savedRule.rule)} ·{" "}
-                              {humanSchedule(savedRule.schedule)}
+                              {humanRule(savedRule.rule)} · {humanSchedule(savedRule.schedule)}
                             </Text>
                           </BlockStack>
 
@@ -296,9 +508,7 @@ export default function StrategiesPage() {
                               borderRadius: 999,
                               border: "none",
                               padding: 2,
-                              background: savedRule.isActive
-                                ? "#303030"
-                                : "#d1d5db",
+                              background: savedRule.isActive ? "#303030" : "#d1d5db",
                               cursor: "pointer",
                             }}
                           >
@@ -369,20 +579,8 @@ export default function StrategiesPage() {
 
             {executionLogs.length > 0 ? (
               <DataTable
-                columnContentTypes={[
-                  "text",
-                  "text",
-                  "text",
-                  "text",
-                  "text",
-                ]}
-                headings={[
-                  "Strategy",
-                  "Status",
-                  "Message",
-                  "Started",
-                  "Completed",
-                ]}
+                columnContentTypes={["text", "text", "text", "text", "text"]}
+                headings={["Strategy", "Status", "Message", "Started", "Completed"]}
                 rows={logRows}
               />
             ) : (

@@ -410,49 +410,111 @@ export async function action({ request }) {
   const formData = await request.formData();
   const intent = formData.get("intent");
 
-  if (intent === "save_collection_settings") {
-  const enabledIds = formData.getAll("enabledCollectionIds");
-  const selectedRule = String(formData.get("rule") || "inventory_high_low");
+  if (intent === "save_single_collection_setting") {
+    const collectionId = String(formData.get("collectionId") || "");
+    const selectedRule = String(formData.get("rule") || "inventory_high_low");
+    const isEnabled = String(formData.get("isEnabled") || "false") === "true";
 
-  for (const collectionId of enabledIds) {
-    await db.collectionSetting.upsert({
-      where: {
-        shop_collectionId: {
-          shop: session.shop,
-          collectionId,
-        },
-      },
-      update: {
-        isEnabled: true,
-        rule: selectedRule,
-      },
-      create: {
-        shop: session.shop,
-        collectionId,
-        isEnabled: true,
-        rule: selectedRule,
-      },
+    if (!collectionId) {
+      return { ok: false, message: "Collection ID is required.", results: [] };
+    }
+
+    const enabledCount = await db.collectionSetting.count({
+      where: { shop: session.shop, isEnabled: true },
     });
+
+    const existingSetting = await db.collectionSetting.findUnique({
+      where: { shop_collectionId: { shop: session.shop, collectionId } },
+    });
+
+    if (isEnabled && !existingSetting?.isEnabled && enabledCount >= currentPlan.limit) {
+      return {
+        ok: false,
+        message: `${currentPlan.name} plan allows up to ${currentPlan.limit} enabled collections.`,
+        results: [],
+      };
+    }
+
+    await db.collectionSetting.upsert({
+      where: { shop_collectionId: { shop: session.shop, collectionId } },
+      update: { isEnabled, rule: selectedRule },
+      create: { shop: session.shop, collectionId, isEnabled, rule: selectedRule },
+    });
+
+    return {
+      ok: true,
+      message: isEnabled ? "Collection automation enabled." : "Collection automation disabled.",
+      results: [],
+    };
   }
 
-  await db.collectionSetting.updateMany({
-    where: {
-      shop: session.shop,
-      collectionId: {
-        notIn: enabledIds,
-      },
-    },
-    data: {
-      isEnabled: false,
-    },
-  });
+  if (intent === "save_bulk_collection_settings") {
+    const collectionIds = formData.getAll("collectionIds");
+    const bulkAction = String(formData.get("bulkAction") || "enable");
 
-  return {
-    ok: true,
-    message: "Collection sorting settings saved.",
-    results: [],
-  };
-}
+    if (!collectionIds.length) {
+      return { ok: false, message: "Select at least one collection.", results: [] };
+    }
+
+    const existingSettings = await db.collectionSetting.findMany({
+      where: { shop: session.shop },
+    });
+
+    const existingEnabledIds = existingSettings
+      .filter((setting) => setting.isEnabled)
+      .map((setting) => setting.collectionId);
+
+    const nextEnabledIds =
+      bulkAction === "enable"
+        ? Array.from(new Set([...existingEnabledIds, ...collectionIds])).slice(0, currentPlan.limit)
+        : existingEnabledIds.filter((id) => !collectionIds.includes(id));
+
+    for (const collectionId of collectionIds) {
+      const currentSetting = existingSettings.find(
+        (setting) => setting.collectionId === collectionId,
+      );
+
+      await db.collectionSetting.upsert({
+        where: { shop_collectionId: { shop: session.shop, collectionId } },
+        update: {
+          isEnabled: nextEnabledIds.includes(collectionId),
+          rule: currentSetting?.rule || "inventory_high_low",
+        },
+        create: {
+          shop: session.shop,
+          collectionId,
+          isEnabled: nextEnabledIds.includes(collectionId),
+          rule: "inventory_high_low",
+        },
+      });
+    }
+
+    return {
+      ok: true,
+      message: bulkAction === "enable" ? "Selected collections enabled." : "Selected collections disabled.",
+      results: [],
+    };
+  }
+
+  if (intent === "save_collection_settings") {
+    const enabledIds = formData.getAll("enabledCollectionIds");
+    const selectedRule = String(formData.get("rule") || "inventory_high_low");
+
+    for (const collectionId of enabledIds) {
+      await db.collectionSetting.upsert({
+        where: { shop_collectionId: { shop: session.shop, collectionId } },
+        update: { isEnabled: true, rule: selectedRule },
+        create: { shop: session.shop, collectionId, isEnabled: true, rule: selectedRule },
+      });
+    }
+
+    await db.collectionSetting.updateMany({
+      where: { shop: session.shop, collectionId: { notIn: enabledIds } },
+      data: { isEnabled: false },
+    });
+
+    return { ok: true, message: "Collection sorting settings saved.", results: [] };
+  }
 
   if (intent === "run_due_rules") {
     const activeRules = await db.sortingRule.findMany({
@@ -714,22 +776,22 @@ export default function CollectionsPage() {
   const navigation = useNavigation();
   const submit = useSubmit();
 
+  const settingsMap = useMemo(() => {
+    const map = {};
+
+    collectionSettings.forEach((setting) => {
+      map[setting.collectionId] = setting;
+    });
+
+    return map;
+  }, [collectionSettings]);
+
   const enabledFromDb = collectionSettings
-  .filter((setting) => setting.isEnabled)
-  .map((setting) => setting.collectionId);
+    .filter((setting) => setting.isEnabled)
+    .map((setting) => setting.collectionId);
 
   const [enabledCollectionIds, setEnabledCollectionIds] = useState(enabledFromDb);
-
-  const settingsMap = useMemo(() => {
-  const map = {};
-
-  collectionSettings.forEach((setting) => {
-    map[setting.collectionId] = setting;
-  });
-
-  return map;
-}, [collectionSettings]);
-  
+  const [quickRule, setQuickRule] = useState(selectedRule);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(1);
@@ -845,72 +907,96 @@ export default function CollectionsPage() {
     return nextIds.slice(0, plan.collectionLimit);
   }
 
+  function saveSingleCollectionSetting(collectionId, isEnabled, selectedRule) {
+    const formData = new FormData();
+
+    formData.set("intent", "save_single_collection_setting");
+    formData.set("collectionId", collectionId);
+    formData.set("isEnabled", String(isEnabled));
+    formData.set("rule", selectedRule);
+
+    submit(formData, { method: "post" });
+  }
+
   function toggleCollectionEnabled(id) {
-  const currentlyEnabled = enabledCollectionIds.includes(id);
+    const currentlyEnabled = enabledCollectionIds.includes(id);
+    const nextEnabled = !currentlyEnabled;
 
-  const nextEnabledIds = currentlyEnabled
-    ? enabledCollectionIds.filter((item) => item !== id)
-    : [...enabledCollectionIds, id];
+    if (nextEnabled && enabledCollectionIds.length >= plan.collectionLimit) {
+      return;
+    }
 
-  setEnabledCollectionIds(nextEnabledIds);
+    setEnabledCollectionIds((current) => {
+      if (current.includes(id)) {
+        return current.filter((item) => item !== id);
+      }
 
-  const existingRule =
-    settingsMap[id]?.rule || "inventory_high_low";
+      return [...current, id];
+    });
 
-  const formData = new FormData();
-
-  nextEnabledIds.forEach((collectionId) => {
-    formData.append("enabledCollectionIds", collectionId);
-  });
-
-  formData.set("rule", existingRule);
-  formData.set("intent", "save_collection_settings");
-
-  submit(formData, { method: "post" });
-}
+    saveSingleCollectionSetting(
+      id,
+      nextEnabled,
+      settingsMap[id]?.rule || "inventory_high_low",
+    );
+  }
 
   function updateCollectionRule(collectionId, nextRule) {
-  const formData = new FormData();
+    saveSingleCollectionSetting(
+      collectionId,
+      enabledCollectionIds.includes(collectionId),
+      nextRule,
+    );
+  }
 
-  enabledCollectionIds.forEach((id) => {
-    formData.append("enabledCollectionIds", id);
-  });
+  function saveBulkCollectionSettings(bulkAction) {
+    const formData = new FormData();
 
-  formData.set("rule", nextRule);
-  formData.set("intent", "save_collection_settings");
+    selectedResources.forEach((id) => {
+      formData.append("collectionIds", id);
+    });
 
-  submit(formData, { method: "post" });
-}
+    formData.set("intent", "save_bulk_collection_settings");
+    formData.set("bulkAction", bulkAction);
+
+    submit(formData, { method: "post" });
+  }
 
   function enableSelectedCollections() {
     setEnabledCollectionIds((current) => {
       const nextIds = Array.from(new Set([...current, ...selectedResources]));
       return limitEnabledIds(nextIds);
     });
+
+    saveBulkCollectionSettings("enable");
   }
 
   function disableSelectedCollections() {
     setEnabledCollectionIds((current) =>
       current.filter((id) => !selectedResources.includes(id)),
     );
+
+    saveBulkCollectionSettings("disable");
   }
 
   function submitCollections(method, intent = "apply_sorting", specificIds = null) {
-  const formData = new FormData();
-  const targetIds = specificIds || selectedResources;
+    const formData = new FormData();
+    const targetIds = specificIds || selectedResources;
 
-  targetIds.forEach((id) => {
-    formData.append("collectionIds", id);
-  });
+    targetIds.forEach((id) => {
+      formData.append("collectionIds", id);
+    });
 
-  const collectionRule =
-    settingsMap[targetIds[0]]?.rule || "inventory_high_low";
+    const collectionRule =
+      specificIds?.length === 1
+        ? settingsMap[specificIds[0]]?.rule || "inventory_high_low"
+        : quickRule;
 
-  formData.set("rule", collectionRule);
-  formData.set("intent", intent);
+    formData.set("rule", collectionRule);
+    formData.set("intent", intent);
 
-  submit(formData, { method });
-}
+    submit(formData, { method });
+  }
 
 
   return (
@@ -1036,7 +1122,14 @@ export default function CollectionsPage() {
                 />
               </div>
 
-              
+              <div style={{ minWidth: 260 }}>
+                <Select
+                  label="Quick sort strategy"
+                  options={ruleOptions}
+                  value={quickRule}
+                  onChange={(value) => setQuickRule(value)}
+                />
+              </div>
             </InlineStack>
           </div>
 
@@ -1150,24 +1243,20 @@ export default function CollectionsPage() {
                   </IndexTable.Cell>
 
                   <IndexTable.Cell>
-  {enabled ? (
-    <Select
-      label=""
-      options={ruleOptions}
-      value={
-        settingsMap[collection.id]?.rule ||
-        "inventory_high_low"
-      }
-      onChange={(value) =>
-        updateCollectionRule(collection.id, value)
-      }
-    />
-  ) : (
-    <Text as="span" tone="subdued">
-      No strategy enabled
-    </Text>
-  )}
-</IndexTable.Cell>
+                    {enabled ? (
+                      <Select
+                        label=""
+                        labelHidden
+                        options={ruleOptions}
+                        value={settingsMap[collection.id]?.rule || "inventory_high_low"}
+                        onChange={(value) => updateCollectionRule(collection.id, value)}
+                      />
+                    ) : (
+                      <Text as="span" tone="subdued">
+                        No strategy enabled
+                      </Text>
+                    )}
+                  </IndexTable.Cell>
 
                   <IndexTable.Cell>
                     <InlineStack gap="100" blockAlign="center">
