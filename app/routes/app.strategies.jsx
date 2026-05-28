@@ -5,7 +5,7 @@ import {
   useActionData,
   useNavigation,
 } from "react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Page,
   Card,
@@ -18,11 +18,15 @@ import {
   DataTable,
   TextField,
   Select,
-  Checkbox,
   Divider,
+  IndexTable,
+  Pagination,
+  EmptyState,
 } from "@shopify/polaris";
 
 import { authenticate } from "../shopify.server";
+
+const PAGE_SIZE = 25;
 
 function safeJsonParse(value, fallback = []) {
   try {
@@ -84,11 +88,12 @@ export async function loader({ request }) {
 
   const collectionsResponse = await admin.graphql(`
     query GetCollectionsForStrategies {
-      collections(first: 100) {
+      collections(first: 250) {
         edges {
           node {
             id
             title
+            handle
             sortOrder
             productsCount {
               count
@@ -105,6 +110,7 @@ export async function loader({ request }) {
     collectionsData?.data?.collections?.edges?.map((edge) => ({
       id: edge.node.id,
       title: edge.node.title,
+      handle: edge.node.handle,
       sortOrder: edge.node.sortOrder,
       productsCount: edge.node.productsCount?.count || 0,
     })) || [];
@@ -261,6 +267,9 @@ export default function StrategiesPage() {
   const [rule, setRule] = useState("inventory_high_low");
   const [schedule, setSchedule] = useState("manual");
   const [selectedCollectionIds, setSelectedCollectionIds] = useState([]);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [page, setPage] = useState(1);
 
   const ruleOptions = [
     { label: "Inventory: High to Low", value: "inventory_high_low" },
@@ -280,6 +289,44 @@ export default function StrategiesPage() {
     { label: "Hourly", value: "hourly" },
   ];
 
+  const filterOptions = [
+    { label: "All collections", value: "all" },
+    { label: "Manual only", value: "manual" },
+    { label: "Not manual", value: "not_manual" },
+  ];
+
+  const filteredCollections = useMemo(() => {
+    return collections.filter((collection) => {
+      const searchText = `${collection.title} ${collection.handle || ""}`.toLowerCase();
+      const matchesQuery = !query || searchText.includes(query.toLowerCase());
+      const isManual = collection.sortOrder === "MANUAL";
+
+      const matchesFilter =
+        filter === "all" ||
+        (filter === "manual" && isManual) ||
+        (filter === "not_manual" && !isManual);
+
+      return matchesQuery && matchesFilter;
+    });
+  }, [collections, filter, query]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredCollections.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pagedCollections = filteredCollections.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
+  );
+
+  const pagedCollectionIds = pagedCollections.map((collection) => collection.id);
+
+  const allVisibleSelected =
+    pagedCollectionIds.length > 0 &&
+    pagedCollectionIds.every((id) => selectedCollectionIds.includes(id));
+
+  const someVisibleSelected =
+    pagedCollectionIds.some((id) => selectedCollectionIds.includes(id)) &&
+    !allVisibleSelected;
+
   function toggleCollection(collectionId) {
     setSelectedCollectionIds((current) => {
       if (current.includes(collectionId)) {
@@ -288,6 +335,24 @@ export default function StrategiesPage() {
 
       return [...current, collectionId];
     });
+  }
+
+  function toggleSelectVisible() {
+    setSelectedCollectionIds((current) => {
+      if (allVisibleSelected) {
+        return current.filter((id) => !pagedCollectionIds.includes(id));
+      }
+
+      return Array.from(new Set([...current, ...pagedCollectionIds]));
+    });
+  }
+
+  function clearSelectedCollections() {
+    setSelectedCollectionIds([]);
+  }
+
+  function selectAllFilteredCollections() {
+    setSelectedCollectionIds(filteredCollections.map((collection) => collection.id));
   }
 
   function createStrategy() {
@@ -365,11 +430,11 @@ export default function StrategiesPage() {
                 </Text>
 
                 <Text as="p" tone="subdued">
-                  Save a rule once and let SortPilot run it for one or more collections.
+                  Choose a rule, schedule, and assign it to one or many collections.
                 </Text>
               </BlockStack>
 
-              <Badge tone="info">Automation</Badge>
+              <Badge tone="info">{selectedCollectionIds.length} selected</Badge>
             </InlineStack>
 
             <InlineStack gap="400" blockAlign="end" wrap>
@@ -404,41 +469,144 @@ export default function StrategiesPage() {
 
             <Divider />
 
-            <BlockStack gap="200">
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="h3" variant="headingSm">
-                  Collections
-                </Text>
-
-                <Badge>{selectedCollectionIds.length} selected</Badge>
-              </InlineStack>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-                  gap: 12,
-                }}
-              >
-                {collections.map((collection) => (
-                  <div
-                    key={collection.id}
-                    style={{
-                      padding: 12,
-                      border: "1px solid #e3e3e3",
-                      borderRadius: 10,
-                      background: "#fff",
-                    }}
-                  >
-                    <Checkbox
-                      label={`${collection.title} (${collection.productsCount} products)`}
-                      checked={selectedCollectionIds.includes(collection.id)}
-                      onChange={() => toggleCollection(collection.id)}
+            <Card padding="0">
+              <div style={{ padding: "16px" }}>
+                <InlineStack gap="400" blockAlign="end" wrap>
+                  <div style={{ minWidth: 300, flex: "1 1 320px" }}>
+                    <TextField
+                      label="Search collections"
+                      value={query}
+                      onChange={(value) => {
+                        setQuery(value);
+                        setPage(1);
+                      }}
+                      placeholder="Search by collection title or handle"
+                      autoComplete="off"
+                      clearButton
+                      onClearButtonClick={() => setQuery("")}
                     />
                   </div>
-                ))}
+
+                  <div style={{ minWidth: 220 }}>
+                    <Select
+                      label="Filter"
+                      options={filterOptions}
+                      value={filter}
+                      onChange={(value) => {
+                        setFilter(value);
+                        setPage(1);
+                      }}
+                    />
+                  </div>
+
+                  <InlineStack gap="200">
+                    <Button onClick={selectAllFilteredCollections}>
+                      Select all filtered
+                    </Button>
+
+                    <Button onClick={clearSelectedCollections}>
+                      Clear
+                    </Button>
+                  </InlineStack>
+                </InlineStack>
               </div>
-            </BlockStack>
+
+              <IndexTable
+                resourceName={{ singular: "collection", plural: "collections" }}
+                itemCount={filteredCollections.length}
+                selectable={false}
+                headings={[
+                  {
+                    title: (
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        ref={(input) => {
+                          if (input) input.indeterminate = someVisibleSelected;
+                        }}
+                        onChange={toggleSelectVisible}
+                        aria-label="Select visible collections"
+                        style={{ width: 16, height: 16 }}
+                      />
+                    ),
+                  },
+                  { title: "Collection" },
+                  { title: "Products" },
+                  { title: "Sort order" },
+                ]}
+              >
+                {pagedCollections.map((collection, index) => {
+                  const selected = selectedCollectionIds.includes(collection.id);
+                  const manual = collection.sortOrder === "MANUAL";
+
+                  return (
+                    <IndexTable.Row
+                      id={collection.id}
+                      key={collection.id}
+                      position={index}
+                    >
+                      <IndexTable.Cell>
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={(event) => {
+                            event.stopPropagation();
+                            toggleCollection(collection.id);
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                          aria-label={`Select ${collection.title}`}
+                          style={{ width: 16, height: 16 }}
+                        />
+                      </IndexTable.Cell>
+
+                      <IndexTable.Cell>
+                        <Text as="span" fontWeight="semibold">
+                          {collection.title}
+                        </Text>
+                      </IndexTable.Cell>
+
+                      <IndexTable.Cell>
+                        <Text as="span">{collection.productsCount}</Text>
+                      </IndexTable.Cell>
+
+                      <IndexTable.Cell>
+                        {manual ? (
+                          <Badge tone="success">Manual</Badge>
+                        ) : (
+                          <Badge tone="warning">Not manual</Badge>
+                        )}
+                      </IndexTable.Cell>
+                    </IndexTable.Row>
+                  );
+                })}
+              </IndexTable>
+
+              {filteredCollections.length === 0 ? (
+                <div style={{ padding: 24 }}>
+                  <EmptyState
+                    heading="No collections match your filters"
+                    image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                  >
+                    <p>Try changing the search or filter.</p>
+                  </EmptyState>
+                </div>
+              ) : null}
+
+              <div style={{ padding: "12px 16px", borderTop: "1px solid #ebebeb" }}>
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="p" tone="subdued">
+                    Showing {pagedCollections.length} of {filteredCollections.length} collections
+                  </Text>
+
+                  <Pagination
+                    hasPrevious={currentPage > 1}
+                    onPrevious={() => setPage((value) => Math.max(1, value - 1))}
+                    hasNext={currentPage < totalPages}
+                    onNext={() => setPage((value) => Math.min(totalPages, value + 1))}
+                  />
+                </InlineStack>
+              </div>
+            </Card>
 
             <InlineStack align="end">
               <Button
