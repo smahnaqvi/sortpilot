@@ -719,7 +719,17 @@ export default function CollectionsPage() {
   .map((setting) => setting.collectionId);
 
   const [enabledCollectionIds, setEnabledCollectionIds] = useState(enabledFromDb);
-  const [rule, setRule] = useState(selectedRule);
+
+  const settingsMap = useMemo(() => {
+  const map = {};
+
+  collectionSettings.forEach((setting) => {
+    map[setting.collectionId] = setting;
+  });
+
+  return map;
+}, [collectionSettings]);
+  
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(1);
@@ -836,18 +846,41 @@ export default function CollectionsPage() {
   }
 
   function toggleCollectionEnabled(id) {
-    setEnabledCollectionIds((current) => {
-      if (current.includes(id)) {
-        return current.filter((item) => item !== id);
-      }
+  const currentlyEnabled = enabledCollectionIds.includes(id);
 
-      if (current.length >= plan.collectionLimit) {
-        return current;
-      }
+  const nextEnabledIds = currentlyEnabled
+    ? enabledCollectionIds.filter((item) => item !== id)
+    : [...enabledCollectionIds, id];
 
-      return [...current, id];
-    });
-  }
+  setEnabledCollectionIds(nextEnabledIds);
+
+  const existingRule =
+    settingsMap[id]?.rule || "inventory_high_low";
+
+  const formData = new FormData();
+
+  nextEnabledIds.forEach((collectionId) => {
+    formData.append("enabledCollectionIds", collectionId);
+  });
+
+  formData.set("rule", existingRule);
+  formData.set("intent", "save_collection_settings");
+
+  submit(formData, { method: "post" });
+}
+
+  function updateCollectionRule(collectionId, nextRule) {
+  const formData = new FormData();
+
+  enabledCollectionIds.forEach((id) => {
+    formData.append("enabledCollectionIds", id);
+  });
+
+  formData.set("rule", nextRule);
+  formData.set("intent", "save_collection_settings");
+
+  submit(formData, { method: "post" });
+}
 
   function enableSelectedCollections() {
     setEnabledCollectionIds((current) => {
@@ -863,18 +896,21 @@ export default function CollectionsPage() {
   }
 
   function submitCollections(method, intent = "apply_sorting", specificIds = null) {
-    const formData = new FormData();
-    const targetIds = specificIds || selectedResources;
+  const formData = new FormData();
+  const targetIds = specificIds || selectedResources;
 
-    targetIds.forEach((id) => {
-      formData.append("collectionIds", id);
-    });
+  targetIds.forEach((id) => {
+    formData.append("collectionIds", id);
+  });
 
-    formData.set("rule", rule);
-    formData.set("intent", intent);
+  const collectionRule =
+    settingsMap[targetIds[0]]?.rule || "inventory_high_low";
 
-    submit(formData, { method });
-  }
+  formData.set("rule", collectionRule);
+  formData.set("intent", intent);
+
+  submit(formData, { method });
+}
 
 
   return (
@@ -1000,14 +1036,7 @@ export default function CollectionsPage() {
                 />
               </div>
 
-              <div style={{ minWidth: 260 }}>
-                <Select
-                  label="Sorting strategy"
-                  options={ruleOptions}
-                  value={rule}
-                  onChange={(value) => setRule(value)}
-                />
-              </div>
+              
             </InlineStack>
           </div>
 
@@ -1121,10 +1150,24 @@ export default function CollectionsPage() {
                   </IndexTable.Cell>
 
                   <IndexTable.Cell>
-                    <Text as="span" tone={enabled ? undefined : "subdued"}>
-                      {enabled ? humanRule(rule) : "No strategy enabled"}
-                    </Text>
-                  </IndexTable.Cell>
+  {enabled ? (
+    <Select
+      label=""
+      options={ruleOptions}
+      value={
+        settingsMap[collection.id]?.rule ||
+        "inventory_high_low"
+      }
+      onChange={(value) =>
+        updateCollectionRule(collection.id, value)
+      }
+    />
+  ) : (
+    <Text as="span" tone="subdued">
+      No strategy enabled
+    </Text>
+  )}
+</IndexTable.Cell>
 
                   <IndexTable.Cell>
                     <InlineStack gap="100" blockAlign="center">
