@@ -325,6 +325,12 @@ export async function loader({ request }) {
   const selectedCollectionIds = url.searchParams.getAll("collectionIds");
   const selectedRule = url.searchParams.get("rule") || "inventory_high_low";
 
+  const collectionSettings = await db.collectionSetting.findMany({
+  where: {
+    shop: session.shop,
+  },
+});
+  
   const collectionsResponse = await admin.graphql(`
     query GetCollections {
       collections(first: 100) {
@@ -385,6 +391,7 @@ export async function loader({ request }) {
 
   return {
     collections,
+    collectionSettings,
     selectedCollectionIds: defaultSelectedIds,
     selectedRule,
     savedRules,
@@ -402,6 +409,50 @@ export async function action({ request }) {
 
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent === "save_collection_settings") {
+  const enabledIds = formData.getAll("enabledCollectionIds");
+  const selectedRule = String(formData.get("rule") || "inventory_high_low");
+
+  for (const collectionId of enabledIds) {
+    await db.collectionSetting.upsert({
+      where: {
+        shop_collectionId: {
+          shop: session.shop,
+          collectionId,
+        },
+      },
+      update: {
+        isEnabled: true,
+        rule: selectedRule,
+      },
+      create: {
+        shop: session.shop,
+        collectionId,
+        isEnabled: true,
+        rule: selectedRule,
+      },
+    });
+  }
+
+  await db.collectionSetting.updateMany({
+    where: {
+      shop: session.shop,
+      collectionId: {
+        notIn: enabledIds,
+      },
+    },
+    data: {
+      isEnabled: false,
+    },
+  });
+
+  return {
+    ok: true,
+    message: "Collection sorting settings saved.",
+    results: [],
+  };
+}
 
   if (intent === "run_due_rules") {
     const activeRules = await db.sortingRule.findMany({
@@ -656,15 +707,18 @@ export default function CollectionsPage() {
     selectedRule,
     savedRules,
     plan,
+    collectionSettings,
   } = useLoaderData();
 
   const actionData = useActionData();
   const navigation = useNavigation();
   const submit = useSubmit();
 
-  const [enabledCollectionIds, setEnabledCollectionIds] = useState(
-    selectedCollectionIds,
-  );
+  const enabledFromDb = collectionSettings
+  .filter((setting) => setting.isEnabled)
+  .map((setting) => setting.collectionId);
+
+  const [enabledCollectionIds, setEnabledCollectionIds] = useState(enabledFromDb);
   const [rule, setRule] = useState(selectedRule);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");

@@ -71,3 +71,16 @@ model RuleExecutionLog {
 
   @@index([sortingRuleId])
 }
+
+model CollectionSetting {
+  id           Int      @id @default(autoincrement())
+  shop         String
+  collectionId String
+  isEnabled    Boolean  @default(false)
+  rule          String   @default("inventory_high_low")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([shop, collectionId])
+  @@index([shop])
+}
