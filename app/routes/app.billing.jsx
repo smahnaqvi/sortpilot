@@ -152,7 +152,8 @@ export async function action({ request }) {
   }
 
   const url = new URL(request.url);
-  const returnUrl = `${url.origin}/app/billing`;
+  const returnUrl =
+    `${url.origin}/app?shop=${session.shop}&charge_approved=true`;
 
   const response = await admin.graphql(
     `
