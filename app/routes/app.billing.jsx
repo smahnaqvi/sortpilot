@@ -153,7 +153,7 @@ export async function action({ request }) {
 
   const url = new URL(request.url);
   const returnUrl =
-    `${url.origin}/app?shop=${session.shop}`;
+    `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}`;
 
   const response = await admin.graphql(
     `
