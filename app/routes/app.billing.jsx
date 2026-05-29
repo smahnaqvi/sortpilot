@@ -1,7 +1,6 @@
 import {
-  useActionData,
+  Form,
   useLoaderData,
-  useSubmit,
   useNavigation,
 } from "react-router";
 import { useEffect } from "react";
@@ -131,97 +130,24 @@ export async function loader({ request }) {
 }
 
 export async function action({ request }) {
-  const { admin } = await authenticate.admin(request);
+  const { billing, session } = await authenticate.admin(request);
 
   const formData = await request.formData();
   const planKey = String(formData.get("plan") || "free");
   const plan = PLANS[planKey];
 
-  if (!plan) {
-    return {
-      ok: false,
-      message: "Invalid plan selected.",
-    };
+  if (!plan || planKey === "free") {
+    return null;
   }
 
-  if (planKey === "free") {
-    return {
-      ok: true,
-      message: "Free plan selected.",
-    };
-  }
-
-  const url = new URL(request.url);
-  const returnUrl =
-    `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}`;
-
-  const response = await admin.graphql(
-    `
-      mutation CreateSubscription(
-        $name: String!
-        $returnUrl: URL!
-        $lineItems: [AppSubscriptionLineItemInput!]!
-        $test: Boolean
-      ) {
-        appSubscriptionCreate(
-          name: $name
-          returnUrl: $returnUrl
-          lineItems: $lineItems
-          test: $test
-        ) {
-          confirmationUrl
-          userErrors {
-            field
-            message
-          }
-        }
-      }
-    `,
-    {
-      variables: {
-        name: plan.name,
-        returnUrl,
-        test: false,
-        lineItems: [
-          {
-            plan: {
-              appRecurringPricingDetails: {
-                price: {
-                  amount: plan.price,
-                  currencyCode: "USD",
-                },
-                interval: "EVERY_30_DAYS",
-              },
-            },
-          },
-        ],
-      },
-    },
-  );
-
-  const data = await response.json();
-  const errors = data?.data?.appSubscriptionCreate?.userErrors || [];
-
-  if (errors.length > 0) {
-    return {
-      ok: false,
-      message: errors.map((error) => error.message).join(", "),
-    };
-  }
-
-  const confirmationUrl = data?.data?.appSubscriptionCreate?.confirmationUrl;
-
-  if (!confirmationUrl) {
-    return {
-      ok: false,
-      message: "Subscription confirmation URL was not generated.",
-    };
-  }
-
-  return {
-    ok: true,
-    confirmationUrl,
-  };
+  return billing.request({
+    plan: plan.name,
+    isTest: false,
+    returnUrl: `https://admin.shopify.com/store/${session.shop.replace(
+      ".myshopify.com",
+      "",
+    )}/apps/${process.env.SHOPIFY_API_KEY}/billing`,
+  });
 }
 
 function FeatureItem({ children, muted = false, negative = false }) {
@@ -246,24 +172,11 @@ function FeatureItem({ children, muted = false, negative = false }) {
 
 export default function BillingPage() {
   const { currentPlan, plans, activeSubscriptions } = useLoaderData();
-  const actionData = useActionData();
-  const submit = useSubmit();
   const navigation = useNavigation();
 
   const isLoading = navigation.state === "submitting";
 
-  useEffect(() => {
-    if (actionData?.confirmationUrl) {
-      window.open(actionData.confirmationUrl, "_top");
-    }
-  }, [actionData]);
-
-  function choosePlan(planKey) {
-    const formData = new FormData();
-    formData.set("plan", planKey);
-    submit(formData, { method: "post" });
-  }
-
+  
   return (
     <Page
       title="Billing"
@@ -375,15 +288,18 @@ export default function BillingPage() {
                       ))}
                     </BlockStack>
 
-                    <Button
-                      fullWidth
-                      variant={isCurrent ? undefined : "primary"}
-                      disabled={isCurrent || isLoading}
-                      loading={isLoading}
-                      onClick={() => choosePlan(key)}
-                    >
-                      {isCurrent ? "Active plan" : "Choose plan"}
-                    </Button>
+                    <Form method="post" reloadDocument>
+                      <input type="hidden" name="plan" value={key} />
+                      <Button
+                        fullWidth
+                        submit
+                        variant={isCurrent ? undefined : "primary"}
+                        disabled={isCurrent || isLoading}
+                        loading={isLoading}
+                      >
+                        {isCurrent ? "Active plan" : "Choose plan"}
+                      </Button>
+                    </Form>
                   </BlockStack>
                 </Card>
               </div>
