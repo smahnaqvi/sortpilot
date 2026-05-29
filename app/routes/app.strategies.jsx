@@ -24,6 +24,9 @@ import {
   EmptyState,
 } from "@shopify/polaris";
 
+import { getCurrentPlan } from "../models/plans.server";
+import { getPlanFeatures } from "../models/plan-features";
+
 import { authenticate } from "../shopify.server";
 
 const PAGE_SIZE = 25;
@@ -85,6 +88,8 @@ function getNextRunDate(schedule) {
 
 export async function loader({ request }) {
   const { admin, session } = await authenticate.admin(request);
+  const currentPlan = await getCurrentPlan(admin);
+  const features = getPlanFeatures(currentPlan.name);
 
   const collectionsResponse = await admin.graphql(`
     query GetCollectionsForStrategies {
@@ -143,16 +148,27 @@ export async function loader({ request }) {
     collections,
     savedRules,
     executionLogs,
+    currentPlan,
+    features,
   };
 }
 
 export async function action({ request }) {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+  const currentPlan = await getCurrentPlan(admin);
+  const features = getPlanFeatures(currentPlan.name);
 
   const formData = await request.formData();
   const intent = formData.get("intent");
 
   if (intent === "create_rule") {
+    if (!features.savedStrategies) {
+      return {
+        ok: false,
+        message: "Saved strategies are available on the Scale plan and higher.",
+      };
+    }
+
     const ruleName = String(formData.get("ruleName") || "").trim();
     const rule = String(formData.get("rule") || "inventory_high_low");
     const schedule = String(formData.get("schedule") || "manual");
@@ -256,7 +272,7 @@ export async function action({ request }) {
 }
 
 export default function StrategiesPage() {
-  const { collections, savedRules, executionLogs } = useLoaderData();
+  const { collections, savedRules, executionLogs, currentPlan, features } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
   const submit = useSubmit();
@@ -421,6 +437,12 @@ export default function StrategiesPage() {
           </Banner>
         ) : null}
 
+        {!features.savedStrategies ? (
+          <Banner tone="warning" title="Saved strategies are available on Scale and higher">
+            <p>Your current plan is {currentPlan.name}. Upgrade to create reusable strategies and scheduled automation.</p>
+          </Banner>
+        ) : null}
+
         <Card>
           <BlockStack gap="300">
             <InlineStack align="space-between" blockAlign="center">
@@ -443,6 +465,7 @@ export default function StrategiesPage() {
                   label="Strategy name"
                   value={ruleName}
                   onChange={setRuleName}
+                  disabled={!features.savedStrategies}
                   placeholder="Example: High inventory first"
                   autoComplete="off"
                 />
@@ -454,6 +477,7 @@ export default function StrategiesPage() {
                   options={ruleOptions}
                   value={rule}
                   onChange={setRule}
+                  disabled={!features.savedStrategies}
                 />
               </div>
 
@@ -463,6 +487,7 @@ export default function StrategiesPage() {
                   options={scheduleOptions}
                   value={schedule}
                   onChange={setSchedule}
+                  disabled={!features.savedStrategies}
                 />
               </div>
             </InlineStack>
@@ -612,7 +637,7 @@ export default function StrategiesPage() {
               <Button
                 variant="primary"
                 loading={isWorking}
-                disabled={!ruleName || selectedCollectionIds.length === 0 || isWorking}
+                disabled={!features.savedStrategies || !ruleName || selectedCollectionIds.length === 0 || isWorking}
                 onClick={createStrategy}
               >
                 Create strategy
@@ -620,7 +645,7 @@ export default function StrategiesPage() {
             </InlineStack>
           </BlockStack>
         </Card>
-
+        {features.analytics && (
         <Card>
           <BlockStack gap="300">
             <InlineStack align="space-between" blockAlign="center">
@@ -728,7 +753,9 @@ export default function StrategiesPage() {
             )}
           </BlockStack>
         </Card>
+        )}
 
+        {features.analytics && (
         <Card>
           <BlockStack gap="300">
             <InlineStack align="space-between" blockAlign="center">
@@ -758,6 +785,7 @@ export default function StrategiesPage() {
             )}
           </BlockStack>
         </Card>
+        )}
       </BlockStack>
     </Page>
   );

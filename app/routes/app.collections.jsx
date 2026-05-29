@@ -1,3 +1,4 @@
+import { getPlanFeatures } from "../models/plan-features";
 import { getCurrentPlan } from "../models/plans.server";
 import db from "../db.server";
 import {
@@ -406,6 +407,7 @@ export async function loader({ request }) {
 export async function action({ request }) {
   const { admin, session } = await authenticate.admin(request);
   const currentPlan = await getCurrentPlan(admin);
+  const currentFeatures = getPlanFeatures(currentPlan.name);
 
   const formData = await request.formData();
   const intent = formData.get("intent");
@@ -451,6 +453,14 @@ export async function action({ request }) {
   if (intent === "save_bulk_collection_settings") {
     const collectionIds = formData.getAll("collectionIds");
     const bulkAction = String(formData.get("bulkAction") || "enable");
+
+    if (!currentFeatures.bulkSorting) {
+      return {
+        ok: false,
+        message: "Bulk collection actions are available on the Scale plan and higher.",
+        results: [],
+      };
+    }
 
     if (!collectionIds.length) {
       return { ok: false, message: "Select at least one collection.", results: [] };
@@ -664,6 +674,14 @@ export async function action({ request }) {
     };
   }
 
+  if (collectionIds.length > 1 && !currentFeatures.bulkSorting) {
+    return {
+      ok: false,
+      message: "Bulk sorting is available on the Scale plan and higher. Free plan supports single-collection manual sorting.",
+      results: [],
+    };
+  }
+
   if (collectionIds.length > currentPlan.limit) {
     return {
       ok: false,
@@ -775,6 +793,7 @@ export default function CollectionsPage() {
   const actionData = useActionData();
   const navigation = useNavigation();
   const submit = useSubmit();
+  const features = getPlanFeatures(plan.name);
 
   const settingsMap = useMemo(() => {
     const map = {};
@@ -1009,9 +1028,15 @@ export default function CollectionsPage() {
         {actionData ? (
           <Banner
             tone={actionData.ok ? "success" : "warning"}
-            title="Bulk sorting result"
+            title="Sorting update"
           >
             <p>{actionData.message}</p>
+          </Banner>
+        ) : null}
+
+        {!features.bulkSorting ? (
+          <Banner tone="info" title="Free plan includes manual single-collection sorting">
+            <p>Upgrade to Scale or higher to unlock bulk actions, saved strategies, scheduled automation, and analytics.</p>
           </Banner>
         ) : null}
 
@@ -1068,17 +1093,18 @@ export default function CollectionsPage() {
 
             {selectedCollectionCount > 0 ? (
               <InlineStack gap="200">
-                <Button onClick={enableSelectedCollections}>
+                <Button disabled={!features.bulkSorting} onClick={enableSelectedCollections}>
                   Enable sorting
                 </Button>
 
-                <Button onClick={disableSelectedCollections}>
+                <Button disabled={!features.bulkSorting} onClick={disableSelectedCollections}>
                   Disable sorting
                 </Button>
 
                 <Button
                   variant="primary"
                   loading={isApplying}
+                  disabled={!features.bulkSorting}
                   onClick={() => submitCollections("post", "apply_sorting")}
                 >
                   Sort selected now

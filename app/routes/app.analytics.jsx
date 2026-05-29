@@ -8,9 +8,13 @@ import {
   InlineStack,
   Badge,
   DataTable,
+  Banner,
+  Button,
 } from "@shopify/polaris";
 
 import { authenticate } from "../shopify.server";
+import { getCurrentPlan } from "../models/plans.server";
+import { getPlanFeatures } from "../models/plan-features";
 
 function formatDate(value) {
   if (!value) return "-";
@@ -19,6 +23,8 @@ function formatDate(value) {
 
 export async function loader({ request }) {
   const { admin, session } = await authenticate.admin(request);
+  const currentPlan = await getCurrentPlan(admin);
+  const features = getPlanFeatures(currentPlan.name);
 
   const collectionsResponse = await admin.graphql(`
     query GetCollections {
@@ -100,6 +106,8 @@ export async function loader({ request }) {
     partialRuns,
     failedRuns,
     executionLogs,
+    currentPlan,
+    features,
   };
 }
 
@@ -115,6 +123,8 @@ export default function AnalyticsPage() {
     partialRuns,
     failedRuns,
     executionLogs,
+    currentPlan,
+    features,
   } = useLoaderData();
 
   const logRows = executionLogs.map((log) => [
@@ -123,6 +133,38 @@ export default function AnalyticsPage() {
     log.message,
     formatDate(log.startedAt),
   ]);
+
+  if (!features.analytics) {
+    return (
+      <Page
+        title="Analytics"
+        subtitle="Upgrade to track sorting activity and automation performance"
+        fullWidth
+      >
+        <BlockStack gap="400">
+          <Banner tone="info" title="Analytics are available on Scale and higher">
+            <p>Your current plan is {currentPlan.name}. Upgrade to unlock sorting activity, automation runs, and collection performance reporting.</p>
+          </Banner>
+
+          <Card>
+            <BlockStack gap="200">
+              <Text as="h2" variant="headingMd">
+                What analytics unlocks
+              </Text>
+              <Text as="p" tone="subdued">
+                Track enabled collections, saved strategies, successful runs, failed runs, and recent automation activity.
+              </Text>
+              <InlineStack>
+                <Button url="/app/billing" variant="primary">
+                  View plans
+                </Button>
+              </InlineStack>
+            </BlockStack>
+          </Card>
+        </BlockStack>
+      </Page>
+    );
+  }
 
   return (
     <Page
