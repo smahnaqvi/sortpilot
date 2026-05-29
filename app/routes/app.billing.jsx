@@ -184,14 +184,7 @@ export default function BillingPage() {
       fullWidth
     >
       <BlockStack gap="400">
-        {actionData?.message ? (
-          <Banner
-            tone={actionData.ok ? "success" : "critical"}
-            title="Billing update"
-          >
-            <p>{actionData.message}</p>
-          </Banner>
-        ) : null}
+        
 
         <Banner tone="info" title={`You are currently on ${currentPlan.name}`}>
           <p>
