@@ -143,10 +143,6 @@ export async function action({ request }) {
   return billing.request({
     plan: plan.name,
     isTest: false,
-    returnUrl: `https://admin.shopify.com/store/${session.shop.replace(
-      ".myshopify.com",
-      "",
-    )}/apps/${process.env.SHOPIFY_API_KEY}/billing`,
   });
 }
 
