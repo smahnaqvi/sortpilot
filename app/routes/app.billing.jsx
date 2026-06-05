@@ -277,7 +277,7 @@ export default function BillingPage() {
                       ))}
                     </BlockStack>
 
-                    <Form method="post" reloadDocument>
+                    <Form method="post">
                       <input type="hidden" name="plan" value={key} />
                       <Button
                         fullWidth
