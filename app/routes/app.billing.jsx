@@ -3,7 +3,6 @@ import {
   useLoaderData,
   useNavigation,
 } from "react-router";
-import { useEffect } from "react";
 import {
   Page,
   Card,
@@ -277,7 +276,7 @@ export default function BillingPage() {
                       ))}
                     </BlockStack>
 
-                    <Form method="post">
+                    <Form method="post" reloadDocument>
                       <input type="hidden" name="plan" value={key} />
                       <Button
                         fullWidth
