@@ -29,48 +29,59 @@ import { authenticate } from "../shopify.server";
 const FREE_COLLECTION_LIMIT = 10;
 const PAGE_SIZE = 25;
 
-function sortProducts(products, rule) {
+function sortProducts(products, rule, pushOutOfStockDown = false) {
   const sorted = [...products];
 
-  if (rule === "price_high_low") {
-    sorted.sort((a, b) => Number(b.price) - Number(a.price));
-  }
+  sorted.sort((a, b) => {
+    const inventoryA = Number(a.totalInventory || 0);
+    const inventoryB = Number(b.totalInventory || 0);
 
-  if (rule === "price_low_high") {
-    sorted.sort((a, b) => Number(a.price) - Number(b.price));
-  }
+    if (pushOutOfStockDown) {
+      const aOutOfStock = inventoryA <= 0;
+      const bOutOfStock = inventoryB <= 0;
 
-  if (rule === "inventory_high_low") {
-    sorted.sort(
-      (a, b) => Number(b.totalInventory || 0) - Number(a.totalInventory || 0),
-    );
-  }
+      if (aOutOfStock && !bOutOfStock) return 1;
+      if (!aOutOfStock && bOutOfStock) return -1;
+    }
 
-  if (rule === "inventory_low_high") {
-    sorted.sort(
-      (a, b) => Number(a.totalInventory || 0) - Number(b.totalInventory || 0),
-    );
-  }
+    if (rule === "price_high_low") {
+      return Number(b.price) - Number(a.price);
+    }
 
-  if (rule === "newest_first") {
-    sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  }
+    if (rule === "price_low_high") {
+      return Number(a.price) - Number(b.price);
+    }
 
-  if (rule === "oldest_first") {
-    sorted.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-  }
+    if (rule === "inventory_high_low") {
+      return inventoryB - inventoryA;
+    }
 
-  if (rule === "title_az") {
-    sorted.sort((a, b) => a.title.localeCompare(b.title));
-  }
+    if (rule === "inventory_low_high") {
+      return inventoryA - inventoryB;
+    }
 
-  if (rule === "title_za") {
-    sorted.sort((a, b) => b.title.localeCompare(a.title));
-  }
+    if (rule === "newest_first") {
+      return new Date(b.createdAt) - new Date(a.createdAt);
+    }
 
-  if (rule === "randomize") {
-    sorted.sort(() => Math.random() - 0.5);
-  }
+    if (rule === "oldest_first") {
+      return new Date(a.createdAt) - new Date(b.createdAt);
+    }
+
+    if (rule === "title_az") {
+      return a.title.localeCompare(b.title);
+    }
+
+    if (rule === "title_za") {
+      return b.title.localeCompare(a.title);
+    }
+
+    if (rule === "randomize") {
+      return Math.random() - 0.5;
+    }
+
+    return 0;
+  });
 
   return sorted;
 }
@@ -238,7 +249,7 @@ async function fetchCollectionWithProducts(admin, collectionId) {
   };
 }
 
-async function reorderCollection(admin, collectionId, rule) {
+async function reorderCollection(admin, collectionId, rule, pushOutOfStockDown = false) {
   const result = await fetchCollectionWithProducts(admin, collectionId);
 
   if (!result.collection) {
@@ -257,7 +268,7 @@ async function reorderCollection(admin, collectionId, rule) {
     };
   }
 
-  const sortedProducts = sortProducts(result.products, rule);
+  const sortedProducts = sortProducts(result.products, rule, pushOutOfStockDown);
   const moves = buildSequentialMoves(result.products, sortedProducts);
 
   if (moves.length === 0) {
@@ -558,6 +569,7 @@ export async function action({ request }) {
             admin,
             collectionId,
             savedRule.rule,
+            true,
           );
           collectionResults.push(result);
         }
@@ -665,6 +677,8 @@ export async function action({ request }) {
 
   const collectionIds = formData.getAll("collectionIds");
   const rule = formData.get("rule");
+  const pushOutOfStockDown =
+    String(formData.get("pushOutOfStockDown") || "false") === "true";
 
   if (!collectionIds.length || !rule) {
     return {
@@ -766,7 +780,12 @@ export async function action({ request }) {
   const results = [];
 
   for (const collectionId of collectionIds) {
-    const result = await reorderCollection(admin, collectionId, rule);
+    const result = await reorderCollection(
+      admin,
+      collectionId,
+      rule,
+      pushOutOfStockDown,
+    );
     results.push(result);
   }
 
@@ -811,6 +830,7 @@ export default function CollectionsPage() {
 
   const [enabledCollectionIds, setEnabledCollectionIds] = useState(enabledFromDb);
   const [quickRule, setQuickRule] = useState(selectedRule);
+  const [pushOutOfStockDown, setPushOutOfStockDown] = useState(true);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(1);
@@ -1012,6 +1032,7 @@ export default function CollectionsPage() {
         : quickRule;
 
     formData.set("rule", collectionRule);
+    formData.set("pushOutOfStockDown", String(pushOutOfStockDown));
     formData.set("intent", intent);
 
     submit(formData, { method });
@@ -1156,6 +1177,27 @@ export default function CollectionsPage() {
                   onChange={(value) => setQuickRule(value)}
                 />
               </div>
+
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  minHeight: 36,
+                  paddingBottom: 2,
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={pushOutOfStockDown}
+                  onChange={(event) =>
+                    setPushOutOfStockDown(event.target.checked)
+                  }
+                />
+                Push out of stock items down
+              </label>
             </InlineStack>
           </div>
 
