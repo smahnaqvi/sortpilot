@@ -29,6 +29,17 @@ import { authenticate } from "../shopify.server";
 const FREE_COLLECTION_LIMIT = 10;
 const PAGE_SIZE = 25;
 
+function getDiscountPercent(product) {
+  const price = Number(product.price || 0);
+  const compareAtPrice = Number(product.compareAtPrice || 0);
+
+  if (!compareAtPrice || compareAtPrice <= price || compareAtPrice <= 0) {
+    return 0;
+  }
+
+  return ((compareAtPrice - price) / compareAtPrice) * 100;
+}
+
 function sortProducts(products, rule, pushOutOfStockDown = false) {
   const sorted = [...products];
 
@@ -42,6 +53,14 @@ function sortProducts(products, rule, pushOutOfStockDown = false) {
 
       if (aOutOfStock && !bOutOfStock) return 1;
       if (!aOutOfStock && bOutOfStock) return -1;
+    }
+
+    if (rule === "discount_high_low") {
+      return getDiscountPercent(b) - getDiscountPercent(a);
+    }
+
+    if (rule === "discount_low_high") {
+      return getDiscountPercent(a) - getDiscountPercent(b);
     }
 
     if (rule === "price_high_low") {
@@ -156,6 +175,8 @@ function humanRule(rule) {
     inventory_low_high: "Sort by inventory lowest first",
     price_high_low: "Sort by price highest first",
     price_low_high: "Sort by price lowest first",
+    discount_high_low: "Sort by discount highest first",
+    discount_low_high: "Sort by discount lowest first",
     newest_first: "Sort by newest products",
     oldest_first: "Sort by oldest products",
     title_az: "Sort by title A-Z",
@@ -169,6 +190,62 @@ function humanRule(rule) {
 function formatDate(value) {
   if (!value) return "-";
   return new Date(value).toLocaleString();
+}
+
+async function fetchAllCollections(admin) {
+  const collections = [];
+  let cursor = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(
+      `
+        query GetCollections($cursor: String) {
+          collections(first: 250, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            edges {
+              node {
+                id
+                title
+                handle
+                sortOrder
+                productsCount {
+                  count
+                }
+              }
+            }
+          }
+        }
+      `,
+      {
+        variables: {
+          cursor,
+        },
+      },
+    );
+
+    const data = await response.json();
+    const connection = data?.data?.collections;
+
+    const pageCollections =
+      connection?.edges?.map((edge) => ({
+        id: edge.node.id,
+        title: edge.node.title,
+        handle: edge.node.handle,
+        sortOrder: edge.node.sortOrder,
+        productsCount: edge.node.productsCount?.count || 0,
+      })) || [];
+
+    collections.push(...pageCollections);
+
+    hasNextPage = Boolean(connection?.pageInfo?.hasNextPage);
+    cursor = connection?.pageInfo?.endCursor || null;
+  }
+
+  return collections;
 }
 
 async function fetchCollectionWithProducts(admin, collectionId) {
@@ -194,6 +271,12 @@ async function fetchCollectionWithProducts(admin, collectionId) {
                 createdAt
                 priceRangeV2 {
                   minVariantPrice {
+                    amount
+                    currencyCode
+                  }
+                }
+                compareAtPriceRange {
+                  minVariantCompareAtPrice {
                     amount
                     currencyCode
                   }
@@ -233,6 +316,10 @@ async function fetchCollectionWithProducts(admin, collectionId) {
         totalInventory: product.totalInventory || 0,
         createdAt: product.createdAt,
         price: product.priceRangeV2?.minVariantPrice?.amount || "0.00",
+        compareAtPrice:
+          product.compareAtPriceRange?.minVariantCompareAtPrice?.amount ||
+          product.priceRangeV2?.minVariantPrice?.amount ||
+          "0.00",
         currency: product.priceRangeV2?.minVariantPrice?.currencyCode || "",
       };
     }) || [];
@@ -343,34 +430,7 @@ export async function loader({ request }) {
   },
 });
   
-  const collectionsResponse = await admin.graphql(`
-    query GetCollections {
-      collections(first: 100) {
-        edges {
-          node {
-            id
-            title
-            handle
-            sortOrder
-            productsCount {
-              count
-            }
-          }
-        }
-      }
-    }
-  `);
-
-  const collectionsData = await collectionsResponse.json();
-
-  const collections =
-    collectionsData?.data?.collections?.edges?.map((edge) => ({
-      id: edge.node.id,
-      title: edge.node.title,
-      handle: edge.node.handle,
-      sortOrder: edge.node.sortOrder,
-      productsCount: edge.node.productsCount?.count || 0,
-    })) || [];
+  const collections = await fetchAllCollections(admin);
 
   const defaultSelectedIds =
     selectedCollectionIds.length > 0
@@ -485,10 +545,16 @@ export async function action({ request }) {
       .filter((setting) => setting.isEnabled)
       .map((setting) => setting.collectionId);
 
-    const nextEnabledIds =
+    const requestedEnabledIds =
       bulkAction === "enable"
-        ? Array.from(new Set([...existingEnabledIds, ...collectionIds])).slice(0, currentPlan.limit)
+        ? Array.from(new Set([...existingEnabledIds, ...collectionIds]))
         : existingEnabledIds.filter((id) => !collectionIds.includes(id));
+
+    const nextEnabledIds = requestedEnabledIds.slice(0, currentPlan.limit);
+    const skippedCount =
+      bulkAction === "enable"
+        ? Math.max(0, requestedEnabledIds.length - nextEnabledIds.length)
+        : 0;
 
     for (const collectionId of collectionIds) {
       const currentSetting = existingSettings.find(
@@ -512,7 +578,12 @@ export async function action({ request }) {
 
     return {
       ok: true,
-      message: bulkAction === "enable" ? "Selected collections enabled." : "Selected collections disabled.",
+      message:
+        bulkAction === "enable"
+          ? skippedCount > 0
+            ? `${nextEnabledIds.length} collection(s) are enabled. ${skippedCount} selected collection(s) were not enabled because your ${currentPlan.name} plan allows ${currentPlan.limit} enabled collections only.`
+            : "Selected collections enabled."
+          : "Selected collections disabled.",
       results: [],
     };
   }
@@ -831,6 +902,7 @@ export default function CollectionsPage() {
   const [enabledCollectionIds, setEnabledCollectionIds] = useState(enabledFromDb);
   const [quickRule, setQuickRule] = useState(selectedRule);
   const [pushOutOfStockDown, setPushOutOfStockDown] = useState(true);
+  const [limitWarning, setLimitWarning] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(1);
@@ -850,6 +922,8 @@ export default function CollectionsPage() {
     { label: "Inventory: Low to High", value: "inventory_low_high" },
     { label: "Price: High to Low", value: "price_high_low" },
     { label: "Price: Low to High", value: "price_low_high" },
+    { label: "Discount: High to Low", value: "discount_high_low" },
+    { label: "Discount: Low to High", value: "discount_low_high" },
     { label: "Newest Products First", value: "newest_first" },
     { label: "Oldest Products First", value: "oldest_first" },
     { label: "Title: A to Z", value: "title_az" },
@@ -957,13 +1031,23 @@ export default function CollectionsPage() {
     submit(formData, { method: "post" });
   }
 
+  function showPlanLimitWarning(extraMessage = "") {
+    const message = `Your ${plan.name} plan allows ${plan.collectionLimit} enabled collections only.${extraMessage ? ` ${extraMessage}` : ""}`;
+
+    setLimitWarning(message);
+    window.alert(message);
+  }
+
   function toggleCollectionEnabled(id) {
     const currentlyEnabled = enabledCollectionIds.includes(id);
     const nextEnabled = !currentlyEnabled;
 
     if (nextEnabled && enabledCollectionIds.length >= plan.collectionLimit) {
+      showPlanLimitWarning("Please disable another collection or upgrade your plan.");
       return;
     }
+
+    setLimitWarning("");
 
     setEnabledCollectionIds((current) => {
       if (current.includes(id)) {
@@ -1002,9 +1086,26 @@ export default function CollectionsPage() {
   }
 
   function enableSelectedCollections() {
+    const newSelectedIds = selectedResources.filter(
+      (id) => !enabledCollectionIds.includes(id),
+    );
+
+    const remainingSlots = Math.max(
+      0,
+      plan.collectionLimit - enabledCollectionIds.length,
+    );
+
+    if (newSelectedIds.length > remainingSlots) {
+      showPlanLimitWarning(
+        `You selected ${newSelectedIds.length} new collection(s), but only ${remainingSlots} slot(s) are available.`,
+      );
+    } else {
+      setLimitWarning("");
+    }
+
     setEnabledCollectionIds((current) => {
       const nextIds = Array.from(new Set([...current, ...selectedResources]));
-      return limitEnabledIds(nextIds);
+      return nextIds.slice(0, plan.collectionLimit);
     });
 
     saveBulkCollectionSettings("enable");
@@ -1052,6 +1153,12 @@ export default function CollectionsPage() {
             title="Sorting update"
           >
             <p>{actionData.message}</p>
+          </Banner>
+        ) : null}
+
+        {limitWarning ? (
+          <Banner tone="warning" title="Collection limit reached">
+            <p>{limitWarning}</p>
           </Banner>
         ) : null}
 

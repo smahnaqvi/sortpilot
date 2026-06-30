@@ -290,6 +290,8 @@ export default function StrategiesPage() {
   const ruleOptions = [
     { label: "Inventory: High to Low", value: "inventory_high_low" },
     { label: "Inventory: Low to High", value: "inventory_low_high" },
+    { label: "Discount: High to Low", value: "discount_high_low" },
+    { label: "Discount: Low to High", value: "discount_low_high" },
     { label: "Price: High to Low", value: "price_high_low" },
     { label: "Price: Low to High", value: "price_low_high" },
     { label: "Newest Products First", value: "newest_first" },
