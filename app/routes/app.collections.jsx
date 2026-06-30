@@ -347,22 +347,24 @@ async function reorderCollection(admin, collectionId, rule, pushOutOfStockDown =
     };
   }
 
+  let changedToManual = false;
+
   if (result.collection.sortOrder !== "MANUAL") {
     const manualResponse = await admin.graphql(
       `
-      mutation CollectionUpdate($input: CollectionInput!) {
-        collectionUpdate(input: $input) {
-          collection {
-            id
-            sortOrder
-          }
-          userErrors {
-            field
-            message
+        mutation CollectionUpdate($input: CollectionInput!) {
+          collectionUpdate(input: $input) {
+            collection {
+              id
+              sortOrder
+            }
+            userErrors {
+              field
+              message
+            }
           }
         }
-      }
-    `,
+      `,
       {
         variables: {
           input: {
@@ -375,16 +377,26 @@ async function reorderCollection(admin, collectionId, rule, pushOutOfStockDown =
 
     const manualData = await manualResponse.json();
 
-    const errors =
-      manualData?.data?.collectionUpdate?.userErrors || [];
-
-    if (errors.length) {
+    if (manualData.errors?.length) {
       return {
         ok: false,
         title: result.collection.title,
-        message: errors.map((e) => e.message).join(", "),
+        message: manualData.errors.map((error) => error.message).join(", "),
       };
     }
+
+    const manualErrors =
+      manualData?.data?.collectionUpdate?.userErrors || [];
+
+    if (manualErrors.length > 0) {
+      return {
+        ok: false,
+        title: result.collection.title,
+        message: manualErrors.map((error) => error.message).join(", "),
+      };
+    }
+
+    changedToManual = true;
   }
 
   const sortedProducts = sortProducts(result.products, rule, pushOutOfStockDown);
@@ -444,7 +456,9 @@ async function reorderCollection(admin, collectionId, rule, pushOutOfStockDown =
   return {
     ok: true,
     title: result.collection.title,
-    message: `${moves.length} product move(s) sent to Shopify.`,
+    message: changedToManual
+      ? `Collection switched to manual sorting. ${moves.length} product move(s) sent to Shopify.`
+      : `${moves.length} product move(s) sent to Shopify.`,
   };
 }
 
@@ -966,7 +980,7 @@ export default function CollectionsPage() {
   const filterOptions = [
     { label: "All collections", value: "all" },
     { label: "Manual only", value: "manual" },
-    { label: "Not manual", value: "not_manual" },
+    { label: "Auto sorted", value: "not_manual" },
     { label: "Enabled", value: "enabled" },
     { label: "Disabled", value: "disabled" },
   ];
@@ -1471,9 +1485,7 @@ export default function CollectionsPage() {
                       {manual ? (
                         <Badge tone="success">Manual</Badge>
                       ) : (
-                          <Badge tone="info">
-                            Auto
-                          </Badge>
+                        <Badge tone="info">Auto</Badge>
                       )}
                     </InlineStack>
                   </IndexTable.Cell>
