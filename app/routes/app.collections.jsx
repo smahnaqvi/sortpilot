@@ -348,11 +348,43 @@ async function reorderCollection(admin, collectionId, rule, pushOutOfStockDown =
   }
 
   if (result.collection.sortOrder !== "MANUAL") {
-    return {
-      ok: false,
-      title: result.collection.title,
-      message: "Skipped because collection sort order is not manual.",
-    };
+    const manualResponse = await admin.graphql(
+      `
+      mutation CollectionUpdate($input: CollectionInput!) {
+        collectionUpdate(input: $input) {
+          collection {
+            id
+            sortOrder
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `,
+      {
+        variables: {
+          input: {
+            id: collectionId,
+            sortOrder: "MANUAL",
+          },
+        },
+      },
+    );
+
+    const manualData = await manualResponse.json();
+
+    const errors =
+      manualData?.data?.collectionUpdate?.userErrors || [];
+
+    if (errors.length) {
+      return {
+        ok: false,
+        title: result.collection.title,
+        message: errors.map((e) => e.message).join(", "),
+      };
+    }
   }
 
   const sortedProducts = sortProducts(result.products, rule, pushOutOfStockDown);
@@ -1439,7 +1471,9 @@ export default function CollectionsPage() {
                       {manual ? (
                         <Badge tone="success">Manual</Badge>
                       ) : (
-                        <Badge tone="warning">Not manual</Badge>
+                          <Badge tone="info">
+                            Auto
+                          </Badge>
                       )}
                     </InlineStack>
                   </IndexTable.Cell>
