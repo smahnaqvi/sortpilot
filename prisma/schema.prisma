@@ -41,6 +41,7 @@ model SortingRule {
   collectionIds  String
   schedule       String   @default("manual")
   isActive       Boolean  @default(true)
+  pushOutOfStockDown Boolean  @default(true)
 
   lastRunAt      DateTime?
   nextRunAt      DateTime?
@@ -78,6 +79,7 @@ model CollectionSetting {
   collectionId String
   isEnabled    Boolean  @default(false)
   rule          String   @default("inventory_high_low")
+  pushOutOfStockDown Boolean @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

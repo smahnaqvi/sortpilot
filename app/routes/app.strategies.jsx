@@ -45,6 +45,8 @@ function humanRule(rule) {
     inventory_low_high: "Inventory: Low to High",
     price_high_low: "Price: High to Low",
     price_low_high: "Price: Low to High",
+    discount_high_low: "Discount: High to Low",
+    discount_low_high: "Discount: Low to High",
     newest_first: "Newest First",
     oldest_first: "Oldest First",
     title_az: "Title A-Z",
@@ -86,39 +88,68 @@ function getNextRunDate(schedule) {
   return null;
 }
 
+async function fetchAllCollections(admin) {
+  const collections = [];
+  let cursor = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(
+      `
+        query GetCollectionsForStrategies($cursor: String) {
+          collections(first: 250, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            edges {
+              node {
+                id
+                title
+                handle
+                sortOrder
+                productsCount {
+                  count
+                }
+              }
+            }
+          }
+        }
+      `,
+      {
+        variables: {
+          cursor,
+        },
+      },
+    );
+
+    const data = await response.json();
+    const connection = data?.data?.collections;
+
+    const pageCollections =
+      connection?.edges?.map((edge) => ({
+        id: edge.node.id,
+        title: edge.node.title,
+        handle: edge.node.handle,
+        sortOrder: edge.node.sortOrder,
+        productsCount: edge.node.productsCount?.count || 0,
+      })) || [];
+
+    collections.push(...pageCollections);
+
+    hasNextPage = Boolean(connection?.pageInfo?.hasNextPage);
+    cursor = connection?.pageInfo?.endCursor || null;
+  }
+
+  return collections;
+}
+
 export async function loader({ request }) {
   const { admin, session } = await authenticate.admin(request);
   const currentPlan = await getCurrentPlan(admin);
   const features = getPlanFeatures(currentPlan.name);
 
-  const collectionsResponse = await admin.graphql(`
-    query GetCollectionsForStrategies {
-      collections(first: 250) {
-        edges {
-          node {
-            id
-            title
-            handle
-            sortOrder
-            productsCount {
-              count
-            }
-          }
-        }
-      }
-    }
-  `);
-
-  const collectionsData = await collectionsResponse.json();
-
-  const collections =
-    collectionsData?.data?.collections?.edges?.map((edge) => ({
-      id: edge.node.id,
-      title: edge.node.title,
-      handle: edge.node.handle,
-      sortOrder: edge.node.sortOrder,
-      productsCount: edge.node.productsCount?.count || 0,
-    })) || [];
+  const collections = await fetchAllCollections(admin);
 
   const savedRules = await db.sortingRule.findMany({
     where: {
@@ -172,6 +203,8 @@ export async function action({ request }) {
     const ruleName = String(formData.get("ruleName") || "").trim();
     const rule = String(formData.get("rule") || "inventory_high_low");
     const schedule = String(formData.get("schedule") || "manual");
+    const pushOutOfStockDown =
+      String(formData.get("pushOutOfStockDown") || "true") === "true";
     const collectionIds = formData.getAll("collectionIds");
 
     if (!ruleName) {
@@ -180,6 +213,13 @@ export async function action({ request }) {
 
     if (!collectionIds.length) {
       return { ok: false, message: "Select at least one collection." };
+    }
+
+    if (collectionIds.length > currentPlan.limit) {
+      return {
+        ok: false,
+        message: `${currentPlan.name} plan allows up to ${currentPlan.limit} collections per strategy.`,
+      };
     }
 
     const existingRule = await db.sortingRule.findFirst({
@@ -202,6 +242,7 @@ export async function action({ request }) {
         schedule,
         isActive: schedule !== "manual",
         nextRunAt: getNextRunDate(schedule),
+        pushOutOfStockDown,
       },
     });
 
@@ -282,7 +323,9 @@ export default function StrategiesPage() {
   const [ruleName, setRuleName] = useState("");
   const [rule, setRule] = useState("inventory_high_low");
   const [schedule, setSchedule] = useState("manual");
+  const [pushOutOfStockDown, setPushOutOfStockDown] = useState(true);
   const [selectedCollectionIds, setSelectedCollectionIds] = useState([]);
+  const [limitWarning, setLimitWarning] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(1);
@@ -310,7 +353,7 @@ export default function StrategiesPage() {
   const filterOptions = [
     { label: "All collections", value: "all" },
     { label: "Manual only", value: "manual" },
-    { label: "Not manual", value: "not_manual" },
+    { label: "Will switch to manual", value: "not_manual" },
   ];
 
   const filteredCollections = useMemo(() => {
@@ -345,12 +388,26 @@ export default function StrategiesPage() {
     pagedCollectionIds.some((id) => selectedCollectionIds.includes(id)) &&
     !allVisibleSelected;
 
+  function showPlanLimitWarning(extraMessage = "") {
+    const message = `Your ${currentPlan.name} plan allows up to ${currentPlan.limit} collections per strategy.${extraMessage ? ` ${extraMessage}` : ""}`;
+
+    setLimitWarning(message);
+    window.alert(message);
+  }
+
   function toggleCollection(collectionId) {
     setSelectedCollectionIds((current) => {
       if (current.includes(collectionId)) {
+        setLimitWarning("");
         return current.filter((id) => id !== collectionId);
       }
 
+      if (current.length >= currentPlan.limit) {
+        showPlanLimitWarning("Please remove another collection or upgrade your plan.");
+        return current;
+      }
+
+      setLimitWarning("");
       return [...current, collectionId];
     });
   }
@@ -361,7 +418,15 @@ export default function StrategiesPage() {
         return current.filter((id) => !pagedCollectionIds.includes(id));
       }
 
-      return Array.from(new Set([...current, ...pagedCollectionIds]));
+      const nextIds = Array.from(new Set([...current, ...pagedCollectionIds]));
+
+      if (nextIds.length > currentPlan.limit) {
+        showPlanLimitWarning(`Only the first ${currentPlan.limit} selected collection(s) will be kept.`);
+        return nextIds.slice(0, currentPlan.limit);
+      }
+
+      setLimitWarning("");
+      return nextIds;
     });
   }
 
@@ -370,7 +435,15 @@ export default function StrategiesPage() {
   }
 
   function selectAllFilteredCollections() {
-    setSelectedCollectionIds(filteredCollections.map((collection) => collection.id));
+    const filteredIds = filteredCollections.map((collection) => collection.id);
+
+    if (filteredIds.length > currentPlan.limit) {
+      showPlanLimitWarning(`Your filter returned ${filteredIds.length} collections. The first ${currentPlan.limit} collection(s) were selected.`);
+    } else {
+      setLimitWarning("");
+    }
+
+    setSelectedCollectionIds(filteredIds.slice(0, currentPlan.limit));
   }
 
   function createStrategy() {
@@ -380,6 +453,7 @@ export default function StrategiesPage() {
     formData.set("ruleName", ruleName);
     formData.set("rule", rule);
     formData.set("schedule", schedule);
+    formData.set("pushOutOfStockDown", String(pushOutOfStockDown));
 
     selectedCollectionIds.forEach((collectionId) => {
       formData.append("collectionIds", collectionId);
@@ -439,6 +513,12 @@ export default function StrategiesPage() {
           </Banner>
         ) : null}
 
+        {limitWarning ? (
+          <Banner tone="warning" title="Collection limit reached">
+            <p>{limitWarning}</p>
+          </Banner>
+        ) : null}
+
         {!features.savedStrategies ? (
           <Banner tone="warning" title="Saved strategies are available on Scale and higher">
             <p>Your current plan is {currentPlan.name}. Upgrade to create reusable strategies and scheduled automation.</p>
@@ -492,6 +572,29 @@ export default function StrategiesPage() {
                   disabled={!features.savedStrategies}
                 />
               </div>
+
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  minHeight: 36,
+                  paddingBottom: 2,
+                  fontSize: 13,
+                  cursor: features.savedStrategies ? "pointer" : "not-allowed",
+                  opacity: features.savedStrategies ? 1 : 0.6,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={pushOutOfStockDown}
+                  disabled={!features.savedStrategies}
+                  onChange={(event) =>
+                    setPushOutOfStockDown(event.target.checked)
+                  }
+                />
+                Push out of stock items down
+              </label>
             </InlineStack>
 
             <Divider />
@@ -528,7 +631,7 @@ export default function StrategiesPage() {
 
                   <InlineStack gap="200">
                     <Button onClick={selectAllFilteredCollections}>
-                      Select all filtered
+                      Select all filtered ({filteredCollections.length})
                     </Button>
 
                     <Button onClick={clearSelectedCollections}>
@@ -598,9 +701,9 @@ export default function StrategiesPage() {
 
                       <IndexTable.Cell>
                         {manual ? (
-                          <Badge tone="success">Manual</Badge>
+                          <Badge tone="success">Ready</Badge>
                         ) : (
-                          <Badge tone="warning">Not manual</Badge>
+                          <Badge tone="info">Will switch</Badge>
                         )}
                       </IndexTable.Cell>
                     </IndexTable.Row>
@@ -647,7 +750,7 @@ export default function StrategiesPage() {
             </InlineStack>
           </BlockStack>
         </Card>
-        {features.analytics && (
+        {features.savedStrategies && (
         <Card>
           <BlockStack gap="300">
             <InlineStack align="space-between" blockAlign="center">
@@ -725,6 +828,7 @@ export default function StrategiesPage() {
 
                         <InlineStack gap="200" wrap>
                           <Badge>Collections: {collectionIds.length}</Badge>
+                          <Badge>{savedRule.pushOutOfStockDown ?? true ? "OOS down" : "OOS mixed"}</Badge>
                           <Badge>Last run: {formatDate(savedRule.lastRunAt)}</Badge>
                           <Badge>Next run: {formatDate(savedRule.nextRunAt)}</Badge>
                         </InlineStack>

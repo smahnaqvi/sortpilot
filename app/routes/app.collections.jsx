@@ -249,9 +249,9 @@ async function fetchAllCollections(admin) {
 }
 
 async function fetchCollectionWithProducts(admin, collectionId) {
-  const response = await admin.graphql(
+  const collectionResponse = await admin.graphql(
     `
-      query GetCollectionProducts($id: ID!) {
+      query GetCollectionBasics($id: ID!) {
         collection(id: $id) {
           id
           title
@@ -259,30 +259,6 @@ async function fetchCollectionWithProducts(admin, collectionId) {
           sortOrder
           productsCount {
             count
-          }
-          products(first: 100) {
-            edges {
-              node {
-                id
-                title
-                handle
-                status
-                totalInventory
-                createdAt
-                priceRangeV2 {
-                  minVariantPrice {
-                    amount
-                    currencyCode
-                  }
-                }
-                compareAtPriceRange {
-                  minVariantCompareAtPrice {
-                    amount
-                    currencyCode
-                  }
-                }
-              }
-            }
           }
         }
       }
@@ -294,8 +270,8 @@ async function fetchCollectionWithProducts(admin, collectionId) {
     },
   );
 
-  const data = await response.json();
-  const collection = data?.data?.collection;
+  const collectionData = await collectionResponse.json();
+  const collection = collectionData?.data?.collection;
 
   if (!collection) {
     return {
@@ -304,25 +280,82 @@ async function fetchCollectionWithProducts(admin, collectionId) {
     };
   }
 
-  const products =
-    collection.products?.edges?.map((edge) => {
-      const product = edge.node;
+  const products = [];
+  let cursor = null;
+  let hasNextPage = true;
 
-      return {
-        id: product.id,
-        title: product.title,
-        handle: product.handle,
-        status: product.status,
-        totalInventory: product.totalInventory || 0,
-        createdAt: product.createdAt,
-        price: product.priceRangeV2?.minVariantPrice?.amount || "0.00",
-        compareAtPrice:
-          product.compareAtPriceRange?.minVariantCompareAtPrice?.amount ||
-          product.priceRangeV2?.minVariantPrice?.amount ||
-          "0.00",
-        currency: product.priceRangeV2?.minVariantPrice?.currencyCode || "",
-      };
-    }) || [];
+  while (hasNextPage) {
+    const productsResponse = await admin.graphql(
+      `
+        query GetCollectionProducts($id: ID!, $cursor: String) {
+          collection(id: $id) {
+            products(first: 250, after: $cursor) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              edges {
+                node {
+                  id
+                  title
+                  handle
+                  status
+                  totalInventory
+                  createdAt
+                  priceRangeV2 {
+                    minVariantPrice {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  compareAtPriceRange {
+                    minVariantCompareAtPrice {
+                      amount
+                      currencyCode
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+      {
+        variables: {
+          id: collectionId,
+          cursor,
+        },
+      },
+    );
+
+    const productsData = await productsResponse.json();
+    const connection = productsData?.data?.collection?.products;
+
+    const pageProducts =
+      connection?.edges?.map((edge) => {
+        const product = edge.node;
+
+        return {
+          id: product.id,
+          title: product.title,
+          handle: product.handle,
+          status: product.status,
+          totalInventory: product.totalInventory || 0,
+          createdAt: product.createdAt,
+          price: product.priceRangeV2?.minVariantPrice?.amount || "0.00",
+          compareAtPrice:
+            product.compareAtPriceRange?.minVariantCompareAtPrice?.amount ||
+            product.priceRangeV2?.minVariantPrice?.amount ||
+            "0.00",
+          currency: product.priceRangeV2?.minVariantPrice?.currencyCode || "",
+        };
+      }) || [];
+
+    products.push(...pageProducts);
+
+    hasNextPage = Boolean(connection?.pageInfo?.hasNextPage);
+    cursor = connection?.pageInfo?.endCursor || null;
+  }
 
   return {
     collection: {
@@ -686,7 +719,7 @@ export async function action({ request }) {
             admin,
             collectionId,
             savedRule.rule,
-            true,
+            savedRule.pushOutOfStockDown ?? true,
           );
           collectionResults.push(result);
         }
@@ -824,6 +857,8 @@ export async function action({ request }) {
   if (intent === "save_rule") {
     const ruleName = String(formData.get("ruleName") || "").trim();
     const schedule = String(formData.get("schedule") || "manual");
+    const pushOutOfStockDownForRule =
+      String(formData.get("pushOutOfStockDown") || "true") === "true";
 
     if (!ruleName) {
       return {
@@ -884,6 +919,7 @@ export async function action({ request }) {
         schedule,
         isActive: schedule !== "manual",
         nextRunAt: getNextRunDate(schedule),
+        pushOutOfStockDown: pushOutOfStockDownForRule,
       },
     });
 
@@ -1483,9 +1519,9 @@ export default function CollectionsPage() {
                     <InlineStack gap="100" blockAlign="center">
                       <Text as="span">{collection.productsCount}</Text>
                       {manual ? (
-                        <Badge tone="success">Manual</Badge>
+                        <Badge tone="success">Ready</Badge>
                       ) : (
-                        <Badge tone="info">Auto</Badge>
+                        <Badge tone="info">Will switch</Badge>
                       )}
                     </InlineStack>
                   </IndexTable.Cell>
